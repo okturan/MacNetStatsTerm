@@ -38,9 +38,10 @@ init_colors() {
 calculate_rate() {
   local prev=$1
   local next=$2
+  local interval=${3:-1}
 
   local rate_kb
-  rate_kb=$(echo "scale=2; ($next - $prev) / 1024" | bc)
+  rate_kb=$(echo "scale=2; ($next - $prev) / 1024 / $interval" | bc)
 
   if (( $(echo "$rate_kb > $KB_TO_MB_THRESHOLD" | bc -l) )); then
     local rate_mb
@@ -83,7 +84,7 @@ collect_stats() {
   download_rate=$(calculate_rate "$rx_prev" "$rx_next")
   upload_rate=$(calculate_rate "$tx_prev" "$tx_next")
 
-  echo "$download_rate" "$upload_rate"
+  printf "%s|%s\n" "$download_rate" "$upload_rate"
 }
 
 # Render the network monitor display
@@ -95,7 +96,7 @@ render_display() {
   echo "${BOLD}${GREEN}NETWORK MONITOR${NORMAL}"
   echo "${BOLD}${BLUE}============================${NORMAL}"
   echo "Interface: ${BOLD}${GREEN}$interface${NORMAL}"
-  echo "Download: ${BOLD}${BLUE}$download_rate${NORMAL} | Upload: ${BOLD}${RED}$upload_rate${NORMAL}"
+  printf "Download: ${BOLD}${BLUE}%s${NORMAL} | Upload: ${BOLD}${RED}%s${NORMAL}\n" "$download_rate" "$upload_rate"
 }
 
 # Main function
@@ -118,8 +119,9 @@ main() {
     tput cup 0 0
 
     # Collect statistics and render display
-    local download_rate upload_rate
-    read -r download_rate upload_rate < <(collect_stats "$interface")
+    local stats download_rate upload_rate
+    stats=$(collect_stats "$interface")
+    IFS='|' read -r download_rate upload_rate <<< "$stats"
     render_display "$interface" "$download_rate" "$upload_rate"
   done
 }
