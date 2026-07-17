@@ -1,8 +1,10 @@
 # MacNetStatsTerm
 
+[![CI](https://github.com/okturan/MacNetStatsTerm/actions/workflows/ci.yml/badge.svg)](https://github.com/okturan/MacNetStatsTerm/actions/workflows/ci.yml)
+
 A small, interactive macOS terminal dashboard for the active network interface. It reads the system's cumulative byte counters once per second and displays current download and upload throughput without making network requests or leaving output in terminal scrollback.
 
-![MacNetStatsTerm showing live download and upload throughput](screenshot.jpg)
+![MacNetStatsTerm showing the selected network interface with live download and upload throughput](docs/macnetstats-terminal.jpg)
 
 ## What it does
 
@@ -32,6 +34,24 @@ cd MacNetStatsTerm
 ```
 
 The repository tracks `netmon.sh` as executable. Press <kbd>Control</kbd>+<kbd>C</kbd> to stop; the original terminal screen and cursor are restored.
+
+### Install for the current user
+
+After cloning, install the tested script under a user-owned executable directory:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+install -m 0755 netmon.sh "$HOME/.local/bin/macnetstats"
+"$HOME/.local/bin/macnetstats"
+```
+
+Add `$HOME/.local/bin` to `PATH` if you want to run it as `macnetstats`. Remove the installed copy with:
+
+```bash
+rm "$HOME/.local/bin/macnetstats"
+```
+
+There is no packaged release or Homebrew formula yet. The default branch and its green macOS CI are the current distribution source; a versioned release remains a separate maintainer decision.
 
 ### Select an interface explicitly
 
