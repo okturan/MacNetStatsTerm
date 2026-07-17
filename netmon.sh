@@ -1,130 +1,249 @@
 #!/bin/bash
-set -euo pipefail  # Exit on error, undefined variables, and pipe failures
 
 # Constants
 readonly KB_TO_MB_THRESHOLD=1024
 readonly REFRESH_INTERVAL=1
 
-# Global variables for colors (initialized once)
+# Terminal state. These remain empty when the file is sourced for tests.
 BOLD=""
 GREEN=""
 BLUE=""
 RED=""
 NORMAL=""
+SCREEN_ACTIVE=0
 
-# Cleanup function to restore terminal state
-cleanup() {
-  tput rmcup  # Exit alternate screen buffer
-  tput cnorm  # Show cursor
-  tput sgr0   # Reset text attributes
-  exit 0
+print_error() {
+  printf 'MacNetStatsTerm: %s\n' "$*" >&2
 }
 
-# Set up signal traps to ensure cleanup on exit
-trap cleanup EXIT INT TERM
+is_non_negative_integer() {
+  case "${1:-}" in
+    '' | *[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
-# Initialize color codes
-init_colors() {
-  if [ -t 1 ]; then  # Check if stdout is a terminal
-    BOLD=$(tput bold)
-    GREEN=$(tput setaf 2)
-    BLUE=$(tput setaf 4)
-    RED=$(tput setaf 1)
-    NORMAL=$(tput sgr0)
+# Accept command names as arguments so dependency failures can be tested
+# without changing PATH or relying on a particular machine image.
+check_dependencies() {
+  local command_name
+  local missing=""
+
+  for command_name in "$@"; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      missing="${missing}${missing:+ }${command_name}"
+    fi
+  done
+
+  if [ -n "$missing" ]; then
+    print_error "missing required command(s): $missing"
+    return 1
   fi
 }
 
-# Calculate transfer rate with automatic unit scaling
+require_dependencies() {
+  check_dependencies route netstat awk tput sleep
+}
+
+# Calculate a rate from two cumulative byte counters. Counter resets are
+# clamped to zero rather than rendered as negative throughput.
 calculate_rate() {
-  local prev=$1
-  local next=$2
-  local interval=${3:-1}
+  local previous=${1:-}
+  local current=${2:-}
+  local interval=${3:-}
 
-  local rate_kb
-  rate_kb=$(echo "scale=2; ($next - $prev) / 1024 / $interval" | bc)
-
-  if (( $(echo "$rate_kb > $KB_TO_MB_THRESHOLD" | bc -l) )); then
-    local rate_mb
-    rate_mb=$(echo "scale=2; $rate_kb / 1024" | bc)
-    printf "%.2f MB/s" "$rate_mb"
-  else
-    printf "%.2f KB/s" "$rate_kb"
-  fi
-}
-
-# Detect the active network interface
-get_active_interface() {
-  local interface
-  interface=$(route get 8.8.8.8 2>/dev/null | grep interface | awk '{print $2}')
-
-  if [ -z "$interface" ]; then
-    echo "en0"  # Fallback to default
+  if ! is_non_negative_integer "$previous" ||
+    ! is_non_negative_integer "$current" ||
+    ! is_non_negative_integer "$interval" ||
+    [ "$interval" -eq 0 ]; then
+    print_error "rate counters and interval must be non-negative integers; interval must be greater than zero"
     return 1
   fi
 
-  echo "$interface"
+  awk \
+    -v previous="$previous" \
+    -v current="$current" \
+    -v interval="$interval" \
+    -v threshold="$KB_TO_MB_THRESHOLD" \
+    'BEGIN {
+      delta = current - previous
+      if (delta < 0) {
+        delta = 0
+      }
+      rate_kb = delta / 1024 / interval
+      if (rate_kb >= threshold) {
+        printf "%.2f MB/s", rate_kb / 1024
+      } else {
+        printf "%.2f KB/s", rate_kb
+      }
+    }'
 }
 
-# Get network statistics for a given interface
+calculate_transfer_rates() {
+  local rx_previous=${1:-}
+  local tx_previous=${2:-}
+  local rx_current=${3:-}
+  local tx_current=${4:-}
+  local interval=${5:-}
+  local download_rate
+  local upload_rate
+
+  download_rate=$(calculate_rate "$rx_previous" "$rx_current" "$interval") || return 1
+  upload_rate=$(calculate_rate "$tx_previous" "$tx_current" "$interval") || return 1
+  printf '%s|%s\n' "$download_rate" "$upload_rate"
+}
+
+# Detect the interface used by the local default route. An explicit override
+# is useful on Macs with VPN, bridge, or multiple active interfaces.
+get_active_interface() {
+  local interface=""
+  local fallback=${NETMON_FALLBACK_INTERFACE:-en0}
+
+  if [ -n "${NETMON_INTERFACE:-}" ]; then
+    printf '%s\n' "$NETMON_INTERFACE"
+    return 0
+  fi
+
+  if ! interface=$(route -n get default 2>/dev/null | awk '$1 == "interface:" { print $2; exit }'); then
+    interface=""
+  fi
+
+  if [ -z "$interface" ]; then
+    print_error "could not detect the default-route interface; using $fallback (override with NETMON_INTERFACE)"
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+
+  printf '%s\n' "$interface"
+}
+
 get_network_bytes() {
-  local interface=$1
-  netstat -I "$interface" -b 2>/dev/null | awk 'FNR == 2 {print $7, $10}'
+  local interface=${1:-}
+  local bytes
+  local rx
+  local tx
+  local extra
+
+  if [ -z "$interface" ]; then
+    print_error "an interface name is required"
+    return 1
+  fi
+
+  if ! bytes=$(netstat -I "$interface" -b 2>/dev/null | awk '
+    FNR == 2 { print $7, $10; found = 1; exit }
+    END { if (!found) exit 1 }
+  '); then
+    print_error "could not read byte counters for interface $interface"
+    return 1
+  fi
+
+  IFS=' ' read -r rx tx extra <<< "$bytes"
+  if ! is_non_negative_integer "$rx" ||
+    ! is_non_negative_integer "$tx" ||
+    [ -n "${extra:-}" ]; then
+    print_error "netstat returned invalid byte counters for interface $interface"
+    return 1
+  fi
+
+  printf '%s %s\n' "$rx" "$tx"
 }
 
-# Collect network statistics and calculate rates
 collect_stats() {
-  local interface=$1
-  local rx_prev tx_prev rx_next tx_next
+  local interface=${1:-}
+  local previous
+  local current
+  local rx_previous
+  local tx_previous
+  local rx_current
+  local tx_current
 
-  read -r rx_prev tx_prev < <(get_network_bytes "$interface")
+  previous=$(get_network_bytes "$interface") || return 1
+  IFS=' ' read -r rx_previous tx_previous <<< "$previous"
+
   sleep "$REFRESH_INTERVAL"
-  read -r rx_next tx_next < <(get_network_bytes "$interface")
 
-  local download_rate upload_rate
-  download_rate=$(calculate_rate "$rx_prev" "$rx_next")
-  upload_rate=$(calculate_rate "$tx_prev" "$tx_next")
+  current=$(get_network_bytes "$interface") || return 1
+  IFS=' ' read -r rx_current tx_current <<< "$current"
 
-  printf "%s|%s\n" "$download_rate" "$upload_rate"
+  calculate_transfer_rates \
+    "$rx_previous" \
+    "$tx_previous" \
+    "$rx_current" \
+    "$tx_current" \
+    "$REFRESH_INTERVAL"
 }
 
-# Render the network monitor display
+cleanup() {
+  if [ "${SCREEN_ACTIVE:-0}" -eq 1 ]; then
+    tput cnorm 2>/dev/null || true
+    tput sgr0 2>/dev/null || true
+    tput rmcup 2>/dev/null || true
+    SCREEN_ACTIVE=0
+  fi
+}
+
+init_colors() {
+  if [ -t 1 ]; then
+    BOLD=$(tput bold 2>/dev/null || printf '')
+    GREEN=$(tput setaf 2 2>/dev/null || printf '')
+    BLUE=$(tput setaf 4 2>/dev/null || printf '')
+    RED=$(tput setaf 1 2>/dev/null || printf '')
+    NORMAL=$(tput sgr0 2>/dev/null || printf '')
+  fi
+}
+
 render_display() {
-  local interface=$1
-  local download_rate=$2
-  local upload_rate=$3
+  local interface=${1:-}
+  local download_rate=${2:-}
+  local upload_rate=${3:-}
 
-  echo "${BOLD}${GREEN}NETWORK MONITOR${NORMAL}"
-  echo "${BOLD}${BLUE}============================${NORMAL}"
-  echo "Interface: ${BOLD}${GREEN}$interface${NORMAL}"
-  printf "Download: ${BOLD}${BLUE}%s${NORMAL} | Upload: ${BOLD}${RED}%s${NORMAL}\n" "$download_rate" "$upload_rate"
+  printf '%s%sNETWORK MONITOR%s\n' "$BOLD" "$GREEN" "$NORMAL"
+  printf '%s%s============================%s\n' "$BOLD" "$BLUE" "$NORMAL"
+  printf 'Interface: %s%s%s\n' "$BOLD" "$GREEN" "$interface$NORMAL"
+  printf 'Download: %s%s%s | Upload: %s%s%s\n' \
+    "$BOLD" "$BLUE" "$download_rate$NORMAL" \
+    "$BOLD" "$RED" "$upload_rate$NORMAL"
 }
 
-# Main function
 main() {
-  # Initialize colors once
-  init_colors
-
-  # Detect interface once at startup
   local interface
+  local stats
+  local download_rate
+  local upload_rate
+
+  if [ ! -t 1 ]; then
+    print_error "an interactive terminal is required"
+    return 1
+  fi
+
+  require_dependencies
+  init_colors
   interface=$(get_active_interface)
 
-  # Enter alternate screen buffer and hide cursor
-  tput smcup
-  clear
+  if ! tput smcup; then
+    print_error "the current terminal does not support an alternate screen buffer"
+    return 1
+  fi
+
+  SCREEN_ACTIVE=1
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  tput clear
   tput civis
 
-  # Continuous monitoring loop
   while true; do
-    # Move cursor to beginning (overwrite existing content)
     tput cup 0 0
-
-    # Collect statistics and render display
-    local stats download_rate upload_rate
     stats=$(collect_stats "$interface")
     IFS='|' read -r download_rate upload_rate <<< "$stats"
     render_display "$interface" "$download_rate" "$upload_rate"
   done
 }
 
-# Run the main function
-main
+# Sourcing this file exposes the functions without installing traps or
+# starting the monitor. Direct execution retains strict-mode CLI behavior.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  set -euo pipefail
+  main "$@"
+fi
