@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Constants
+readonly MACNETSTATS_VERSION="1.0.0"
 readonly KB_TO_MB_THRESHOLD=1024
 readonly REFRESH_INTERVAL=1
 
@@ -14,6 +15,26 @@ SCREEN_ACTIVE=0
 
 print_error() {
   printf 'MacNetStatsTerm: %s\n' "$*" >&2
+}
+
+print_version() {
+  printf 'MacNetStatsTerm %s\n' "$MACNETSTATS_VERSION"
+}
+
+print_usage() {
+  cat <<'USAGE'
+Usage: macnetstats [--help | --version]
+
+Interactive macOS terminal dashboard for the active network interface.
+
+Options:
+  -h, --help       Show this help and exit.
+  -V, --version    Show the installed version and exit.
+
+Environment:
+  NETMON_INTERFACE           Monitor this interface instead of auto-detecting.
+  NETMON_FALLBACK_INTERFACE  Fallback interface when detection fails (default: en0).
+USAGE
 }
 
 is_non_negative_integer() {
@@ -210,6 +231,30 @@ main() {
   local stats
   local download_rate
   local upload_rate
+
+  if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 1 ]; then
+      print_error "expected at most one option"
+      print_usage >&2
+      return 2
+    fi
+
+    case "$1" in
+      -h | --help)
+        print_usage
+        return 0
+        ;;
+      -V | --version)
+        print_version
+        return 0
+        ;;
+      *)
+        print_error "unknown option: $1"
+        print_usage >&2
+        return 2
+        ;;
+    esac
+  fi
 
   if [ ! -t 1 ]; then
     print_error "an interactive terminal is required"
