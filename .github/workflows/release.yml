@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "netmon.sh"
+      - "tests/**"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify release contract
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Check Bash syntax
+        run: /bin/bash -n netmon.sh tests/netmon_test.sh
+
+      - name: Run deterministic behavior tests
+        run: /bin/bash tests/netmon_test.sh
+
+      - name: Verify declared version
+        run: |
+          declared="$(/bin/bash netmon.sh --version)"
+          test "$declared" = "MacNetStatsTerm 1.0.0"
+
+  publish:
+    name: Publish tagged script
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches script version
+        run: |
+          grep --quiet --extended-regexp '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$GITHUB_REF_NAME"
+          version="$(bash netmon.sh --version)"
+          test "$version" = "MacNetStatsTerm ${GITHUB_REF_NAME#v}"
+
+      - name: Build single-file distribution
+        run: |
+          mkdir dist
+          install -m 0755 netmon.sh dist/macnetstats
+          (
+            cd dist
+            sha256sum macnetstats > macnetstats.sha256
+          )
+          sha256sum --check dist/macnetstats.sha256
+          test "$(dist/macnetstats --version)" = "MacNetStatsTerm ${GITHUB_REF_NAME#v}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/macnetstats \
+            dist/macnetstats.sha256 \
+            --verify-tag \
+            --title "MacNetStatsTerm ${GITHUB_REF_NAME#v}" \
+            --generate-notes

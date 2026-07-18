@@ -145,6 +145,29 @@ test_direct_execution_rejects_noninteractive_output() {
   assert_contains "$output" "interactive terminal is required" "non-interactive error"
 }
 
+test_version_is_available_without_a_terminal() {
+  local actual
+  actual=$(bash "$ROOT_DIR/netmon.sh" --version)
+  assert_equal "MacNetStatsTerm 1.0.0" "$actual" "version output"
+}
+
+test_help_is_available_without_a_terminal() {
+  local output
+  output=$(bash "$ROOT_DIR/netmon.sh" --help)
+  assert_contains "$output" "Usage: macnetstats" "help usage" || return 1
+  assert_contains "$output" "NETMON_INTERFACE" "help environment"
+}
+
+test_unknown_option_fails_before_terminal_check() {
+  local output
+  local status
+  output=$(bash "$ROOT_DIR/netmon.sh" --unknown 2>&1)
+  status=$?
+
+  assert_equal "2" "$status" "unknown option status" || return 1
+  assert_contains "$output" "unknown option: --unknown" "unknown option error"
+}
+
 test_cleanup_restores_terminal_state() {
   local expected="cnorm sgr0 rmcup"
   TPUT_CALLS=""
@@ -163,7 +186,7 @@ test_cleanup_restores_terminal_state() {
   assert_equal "0" "$SCREEN_ACTIVE" "terminal cleanup state"
 }
 
-printf '1..12\n'
+printf '1..15\n'
 run_test "formats KB/s using the sample interval" test_rate_formats_kilobytes
 run_test "scales 1024 KB/s to MB/s" test_rate_scales_at_one_megabyte
 run_test "calculates independent receive/transmit deltas" test_transfer_pair_uses_independent_deltas
@@ -175,6 +198,9 @@ run_test "honors an explicit interface override" test_explicit_interface_bypasse
 run_test "accepts available dependencies" test_dependency_check_accepts_present_commands
 run_test "reports all missing dependencies" test_dependency_check_reports_missing_commands
 run_test "rejects direct non-interactive execution" test_direct_execution_rejects_noninteractive_output
+run_test "prints the version without requiring a terminal" test_version_is_available_without_a_terminal
+run_test "prints help without requiring a terminal" test_help_is_available_without_a_terminal
+run_test "rejects an unknown option before terminal setup" test_unknown_option_fails_before_terminal_check
 run_test "restores terminal state on cleanup" test_cleanup_restores_terminal_state
 
 if [ "$TESTS_FAILED" -ne 0 ]; then

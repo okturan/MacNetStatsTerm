@@ -27,6 +27,28 @@ No package manager or third-party runtime is required. The script is macOS-speci
 
 ## Install and run
 
+### Install the v1 release
+
+Download the exact reviewed script and its checksum from the
+[v1.0.0 release](https://github.com/okturan/MacNetStatsTerm/releases/tag/v1.0.0):
+
+```bash
+mkdir -p "$HOME/.local/bin"
+curl --fail --location --remote-name \
+  https://github.com/okturan/MacNetStatsTerm/releases/download/v1.0.0/macnetstats
+curl --fail --location --remote-name \
+  https://github.com/okturan/MacNetStatsTerm/releases/download/v1.0.0/macnetstats.sha256
+shasum -a 256 -c macnetstats.sha256
+install -m 0755 macnetstats "$HOME/.local/bin/macnetstats"
+"$HOME/.local/bin/macnetstats" --version
+```
+
+The checksum detects download corruption and binds the asset to the release
+notes; it is published through the same GitHub release channel and is not an
+independent code-signing identity.
+
+### Run from source
+
 ```bash
 git clone https://github.com/okturan/MacNetStatsTerm.git
 cd MacNetStatsTerm
@@ -35,7 +57,7 @@ cd MacNetStatsTerm
 
 The repository tracks `netmon.sh` as executable. Press <kbd>Control</kbd>+<kbd>C</kbd> to stop; the original terminal screen and cursor are restored.
 
-### Install for the current user
+### Install the source checkout for the current user
 
 After cloning, install the tested script under a user-owned executable directory:
 
@@ -51,7 +73,9 @@ Add `$HOME/.local/bin` to `PATH` if you want to run it as `macnetstats`. Remove 
 rm "$HOME/.local/bin/macnetstats"
 ```
 
-There is no packaged release or Homebrew formula yet. The default branch and its green macOS CI are the current distribution source; a versioned release remains a separate maintainer decision.
+There is no Homebrew formula. The v1.0.0 GitHub Release is the supported
+single-file distribution; the default branch and its green macOS CI remain the
+source of truth for later development.
 
 ### Select an interface explicitly
 
@@ -103,7 +127,10 @@ Normal `INT`, `TERM`, and shell-exit paths restore the cursor and leave the alte
 
 ## Verification
 
-The deterministic checks source the script without starting its infinite UI loop. They cover rate scaling, counter deltas and resets, interface detection and fallback, dependency failures, and the non-interactive execution guard.
+The deterministic checks source the script without starting its infinite UI
+loop. They cover rate scaling, counter deltas and resets, interface detection
+and fallback, dependency failures, the non-interactive execution guard, and
+the release version/help/invalid-option contract.
 
 ```bash
 bash -n netmon.sh tests/netmon_test.sh
