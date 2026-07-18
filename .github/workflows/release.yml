@@ -36,6 +36,17 @@ jobs:
           declared="$(/bin/bash netmon.sh --version)"
           test "$declared" = "MacNetStatsTerm 1.0.0"
 
+      - name: Build and verify release candidate
+        run: |
+          mkdir dist
+          install -m 0755 netmon.sh dist/macnetstats
+          (
+            cd dist
+            shasum -a 256 macnetstats > macnetstats.sha256
+            shasum -a 256 --check macnetstats.sha256
+          )
+          test "$(dist/macnetstats --version)" = "MacNetStatsTerm 1.0.0"
+
   publish:
     name: Publish tagged script
     if: startsWith(github.ref, 'refs/tags/')
@@ -64,8 +75,8 @@ jobs:
           (
             cd dist
             sha256sum macnetstats > macnetstats.sha256
+            sha256sum --check macnetstats.sha256
           )
-          sha256sum --check dist/macnetstats.sha256
           test "$(dist/macnetstats --version)" = "MacNetStatsTerm ${GITHUB_REF_NAME#v}"
 
       - name: Publish GitHub Release
